@@ -7,12 +7,21 @@ import (
 	"time"
 )
 
-const defaultMaxItems = 50
+const defaultMaxItems = 10
 
-// ClipItem is one text entry captured from the system clipboard.
+type ClipKind string
+
+const (
+	ClipKindText  ClipKind = "text"
+	ClipKindImage ClipKind = "image"
+)
+
+// ClipItem is one text or image entry captured from the system clipboard.
 type ClipItem struct {
 	ID        string
+	Kind      ClipKind
 	Text      string
+	ImagePath string
 	CreatedAt time.Time
 }
 
@@ -39,6 +48,12 @@ func NewHistory(maxItems int) *History {
 // Add records text at the beginning of the history unless it is blank or
 // already present. It returns whether a new item was added.
 func (h *History) Add(text string) bool {
+	return h.AddText(text)
+}
+
+// AddText records text at the beginning of the history unless it is blank or
+// already present.
+func (h *History) AddText(text string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -49,9 +64,34 @@ func (h *History) Add(text string) bool {
 	h.nextID++
 	item := ClipItem{
 		ID:        fmt.Sprintf("clip-%d", h.nextID),
+		Kind:      ClipKindText,
 		Text:      text,
 		CreatedAt: time.Now(),
 	}
+	return h.addItem(item)
+}
+
+// AddImage records an image file at the beginning of the history unless the
+// path is blank or already present.
+func (h *History) AddImage(path string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if strings.TrimSpace(path) == "" || h.containsImage(path) {
+		return false
+	}
+
+	h.nextID++
+	item := ClipItem{
+		ID:        fmt.Sprintf("clip-%d", h.nextID),
+		Kind:      ClipKindImage,
+		ImagePath: path,
+		CreatedAt: time.Now(),
+	}
+	return h.addItem(item)
+}
+
+func (h *History) addItem(item ClipItem) bool {
 	h.items = append([]ClipItem{item}, h.items...)
 	if len(h.items) > h.maxItems {
 		h.items = h.items[:h.maxItems]
@@ -94,7 +134,17 @@ func (h *History) Clear() {
 
 func (h *History) containsText(text string) bool {
 	for _, item := range h.items {
-		if item.Text == text {
+		if item.Kind != ClipKindImage && item.Text == text {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (h *History) containsImage(path string) bool {
+	for _, item := range h.items {
+		if item.Kind == ClipKindImage && item.ImagePath == path {
 			return true
 		}
 	}

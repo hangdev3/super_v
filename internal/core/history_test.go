@@ -1,6 +1,28 @@
 package core
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
+
+func TestHistoryUsesTenItemDefaultAndEvictsTheOldestEntry(t *testing.T) {
+	// Arrange
+	history := NewHistory(0)
+	for number := 1; number <= 11; number++ {
+		history.Add(fmt.Sprintf("item-%02d", number))
+	}
+
+	// Act
+	items := history.Items()
+
+	// Assert
+	if len(items) != 10 {
+		t.Fatalf("expected the default history limit to be 10, got %d", len(items))
+	}
+	if items[0].Text != "item-11" || items[len(items)-1].Text != "item-02" {
+		t.Fatalf("expected newest-first eviction of the oldest item, got %#v", items)
+	}
+}
 
 func TestHistoryRecordsNewestTextAndSuppressesConsecutiveDuplicate(t *testing.T) {
 	// Arrange
@@ -100,5 +122,40 @@ func TestHistoryIgnoresEmptyTextAndCanBeCleared(t *testing.T) {
 	}
 	if len(history.Items()) != 0 {
 		t.Fatalf("expected clear to remove all history items")
+	}
+}
+
+func TestHistoryStoresTextAndImageItemsWithTheirKind(t *testing.T) {
+	// Arrange
+	history := NewHistory(5)
+
+	// Act
+	textAdded := history.AddText("texto")
+	imageAdded := history.AddImage("/home/look/Imagens/Captures/capture.png")
+
+	// Assert
+	if !textAdded || !imageAdded {
+		t.Fatalf("expected text and image entries to be added")
+	}
+	items := history.Items()
+	if items[0].Kind != ClipKindImage || items[0].ImagePath == "" {
+		t.Fatalf("expected newest item to be an image, got %#v", items[0])
+	}
+	if items[1].Kind != ClipKindText || items[1].Text != "texto" {
+		t.Fatalf("expected older item to be text, got %#v", items[1])
+	}
+}
+
+func TestHistorySuppressesDuplicateImagePath(t *testing.T) {
+	// Arrange
+	history := NewHistory(5)
+	history.AddImage("/tmp/capture.png")
+
+	// Act
+	duplicateAdded := history.AddImage("/tmp/capture.png")
+
+	// Assert
+	if duplicateAdded {
+		t.Fatalf("expected the same image path not to be duplicated")
 	}
 }

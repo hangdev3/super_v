@@ -2,10 +2,13 @@ package fyneui
 
 import (
 	"fmt"
+	"image/color"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
@@ -26,12 +29,15 @@ type Paster interface {
 type WindowController interface {
 	HideDecorations(title string) error
 	IsFocused(title string) (bool, error)
+	Activate(title string, timestamp uint32) error
 }
 
 type Popup struct {
 	manager     *core.Manager
 	pointer     PointerSource
 	window      fyne.Window
+	background  *canvas.Rectangle
+	body        *fyne.Container
 	list        *widget.List
 	clearButton *widget.Button
 	emptyState  *widget.Label
@@ -46,18 +52,91 @@ type Popup struct {
 }
 
 var popupSize = fyne.NewSize(342, 300)
+var historyThumbnailSize = fyne.NewSize(48, 48)
+
+var popupBackgroundColor = color.NRGBA{R: 24, G: 24, B: 27, A: popupBackgroundAlpha}
 
 const (
-	historyPreviewMaxRunes      = 48
-	popupAnchorOffset           = 12
-	popupMinimumVisibleDuration = 800 * time.Millisecond
-	popupDismissPollPeriod      = 80 * time.Millisecond
+	historyPreviewMaxRunes              = 48
+	historyRowHeight                    = 64
+	popupCornerRadius           float32 = 10
+	popupBackgroundAlpha        uint8   = 230 // approximately 90%
+	popupAnchorOffset                   = 12
+	popupMinimumVisibleDuration         = 800 * time.Millisecond
+	popupFocusLossGrace                 = 250 * time.Millisecond
+	popupDismissPollPeriod              = 80 * time.Millisecond
 )
 
 func newHistoryItem() fyne.CanvasObject {
+	return newHistoryRow().Container
+}
+
+func newHistoryRow() *historyRow {
 	label := widget.NewLabel("")
 	label.Truncation = fyne.TextTruncateClip
-	return label
+	thumbnail := canvas.NewImageFromImage(nil)
+	thumbnail.FillMode = canvas.ImageFillContain
+	thumbnail.ScaleMode = canvas.ImageScaleSmooth
+	thumbnail.SetMinSize(historyThumbnailSize)
+	thumbnail.Hide()
+	return &historyRow{
+		Container: container.NewBorder(nil, nil, thumbnail, nil, label),
+		label:     label,
+		thumbnail: thumbnail,
+	}
+}
+
+type historyRow struct {
+	*fyne.Container
+	label     *widget.Label
+	thumbnail *canvas.Image
+}
+
+func (r *historyRow) update(item core.ClipItem) {
+	if item.Kind == core.ClipKindImage {
+		r.label.SetText(filepath.Base(item.ImagePath))
+		r.thumbnail.File = item.ImagePath
+		r.thumbnail.Image = nil
+		r.thumbnail.Resource = nil
+		r.thumbnail.Show()
+	} else {
+		r.label.SetText(previewText(item.Text, historyPreviewMaxRunes))
+		r.thumbnail.File = ""
+		r.thumbnail.Image = nil
+		r.thumbnail.Resource = nil
+		r.thumbnail.Hide()
+	}
+	// The border layout is skipped while a child is hidden. Re-run it before
+	// refreshing so the image receives a real 48x48 area and text gets the
+	// complete row width when the thumbnail is removed.
+	r.Layout.Layout(r.Objects, r.Size())
+	if r.thumbnail.Visible() {
+		r.thumbnail.Refresh()
+	}
+	r.Refresh()
+}
+
+func historyRowFromObject(object fyne.CanvasObject) (*historyRow, bool) {
+	row, ok := object.(*fyne.Container)
+	if !ok {
+		return nil, false
+	}
+
+	var label *widget.Label
+	var thumbnail *canvas.Image
+	for _, child := range row.Objects {
+		switch typedChild := child.(type) {
+		case *widget.Label:
+			label = typedChild
+		case *canvas.Image:
+			thumbnail = typedChild
+		}
+	}
+	if label == nil || thumbnail == nil {
+		return nil, false
+	}
+
+	return &historyRow{Container: row, label: label, thumbnail: thumbnail}, true
 }
 
 func NewPopup(application fyne.App, manager *core.Manager, pointerSource PointerSource) *Popup {
@@ -72,10 +151,11 @@ func NewPopup(application fyne.App, manager *core.Manager, pointerSource Pointer
 		func() int { return len(p.items) },
 		newHistoryItem,
 		func(id widget.ListItemID, object fyne.CanvasObject) {
-			label := object.(*widget.Label)
-			if id >= 0 && id < len(p.items) {
-				label.SetText(previewText(p.items[id].Text, historyPreviewMaxRunes))
+			row, ok := historyRowFromObject(object)
+			if !ok || id < 0 || id >= len(p.items) {
+				return
 			}
+			row.update(p.items[id])
 		},
 	)
 	p.list.HideSeparators = false
@@ -90,10 +170,13 @@ func NewPopup(application fyne.App, manager *core.Manager, pointerSource Pointer
 	p.clearButton.Importance = widget.LowImportance
 	headerTitle := widget.NewLabelWithStyle("Recentes", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	header := container.NewBorder(nil, nil, nil, p.clearButton, headerTitle)
-	p.window = application.NewWindow("Super+V — histórico")
-	body := container.NewStack(p.list, container.NewCenter(p.emptyState))
-	p.window.SetContent(container.NewBorder(header, p.status, nil, nil, body))
-	p.window.SetPadded(true)
+	p.window = application.NewWindow("Super+Shift+V — histórico")
+	p.body = container.NewStack(p.list, container.NewCenter(p.emptyState))
+	p.background = canvas.NewRectangle(popupBackgroundColor)
+	p.background.CornerRadius = popupCornerRadius
+	content := container.NewBorder(header, p.status, nil, nil, p.body)
+	p.window.SetContent(container.NewStack(p.background, container.NewPadded(content)))
+	p.window.SetPadded(false)
 	p.window.SetCloseIntercept(p.Hide)
 	p.window.SetOnClosed(func() { p.stopDismissalMonitor() })
 	p.window.Resize(popupSize)
@@ -110,12 +193,17 @@ func (p *Popup) SetPaster(paster Paster) {
 	p.paster = paster
 }
 
-func (p *Popup) ShowAtPointer() error {
+func (p *Popup) ShowAtPointer(activationTimestamps ...uint32) error {
 	position, err := p.pointer.Position()
 	if err != nil {
 		return err
 	}
 
+	// The background monitor is intentionally polled, but the user expects the
+	// content copied immediately before the shortcut to be present on the first
+	// popup open. A synchronous best-effort read closes that polling window for
+	// both text and image clipboard content without writing anything back.
+	_, _ = p.manager.SyncClipboard()
 	p.refreshItems()
 	p.disarmAutoPaste()
 	if desktopWindow, ok := p.window.(desktop.Window); ok {
@@ -123,10 +211,35 @@ func (p *Popup) ShowAtPointer() error {
 		desktopWindow.RequestPosition(position.X+popupAnchorOffset, position.Y+popupAnchorOffset)
 	}
 	p.window.Show()
-	p.window.RequestFocus()
-	p.hideWindowDecorations()
+	p.requestWindowActivation(firstTimestamp(activationTimestamps))
 	p.startDismissalMonitor()
 	return nil
+}
+
+func firstTimestamp(timestamps []uint32) uint32 {
+	if len(timestamps) == 0 {
+		return 0
+	}
+	return timestamps[0]
+}
+
+func (p *Popup) requestWindowActivation(timestamp uint32) {
+	if p.controller == nil || timestamp == 0 {
+		p.window.RequestFocus()
+		p.hideWindowDecorations()
+		return
+	}
+
+	title := p.window.Title()
+	go func() {
+		for attempt := 0; attempt < 12; attempt++ {
+			_ = p.controller.HideDecorations(title)
+			if err := p.controller.Activate(title, timestamp); err == nil {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	}()
 }
 
 func (p *Popup) Hide() {
@@ -143,6 +256,7 @@ func (p *Popup) startDismissalMonitor() {
 	p.dismissMu.Unlock()
 
 	shownAt := time.Now()
+	var focusLostAt time.Time
 	go func() {
 		ticker := time.NewTicker(popupDismissPollPeriod)
 		defer ticker.Stop()
@@ -151,8 +265,8 @@ func (p *Popup) startDismissalMonitor() {
 			select {
 			case <-stop:
 				return
-			case <-ticker.C:
-				if !popupDismissalReady(shownAt, time.Now()) {
+			case now := <-ticker.C:
+				if !popupDismissalReady(shownAt, now) {
 					continue
 				}
 
@@ -163,6 +277,13 @@ func (p *Popup) startDismissalMonitor() {
 					focusKnown = err == nil
 				}
 				if !popupShouldDismiss(focused, focusKnown) {
+					focusLostAt = time.Time{}
+					continue
+				}
+				if focusLostAt.IsZero() {
+					focusLostAt = now
+				}
+				if !popupFocusLossReady(focusLostAt, now) {
 					continue
 				}
 
@@ -181,6 +302,10 @@ func (p *Popup) startDismissalMonitor() {
 
 func popupDismissalReady(shownAt, now time.Time) bool {
 	return now.Sub(shownAt) >= popupMinimumVisibleDuration
+}
+
+func popupFocusLossReady(lostAt, now time.Time) bool {
+	return !lostAt.IsZero() && now.Sub(lostAt) >= popupFocusLossGrace
 }
 
 func (p *Popup) armAutoPaste() {
@@ -241,6 +366,9 @@ func popupShouldDismiss(focused, focusKnown bool) bool {
 
 func (p *Popup) refreshItems() {
 	p.items = p.manager.History().Items()
+	for id := range p.items {
+		p.list.SetItemHeight(id, historyRowHeight)
+	}
 	if len(p.items) == 0 {
 		p.status.SetText("Histórico vazio")
 		p.list.Hide()
@@ -249,6 +377,12 @@ func (p *Popup) refreshItems() {
 		p.status.SetText(historyStatus(len(p.items)))
 		p.emptyState.Hide()
 		p.list.Show()
+	}
+	// Visibility changes do not automatically re-run a parent Stack layout.
+	// Resize keeps the list rows attached to the visible popup body after an
+	// empty history becomes populated.
+	if p.body != nil {
+		p.body.Resize(p.body.Size())
 	}
 	p.list.Refresh()
 }
@@ -269,6 +403,11 @@ func (p *Popup) selectItem(id widget.ListItemID) {
 
 	if err := p.manager.Select(p.items[id].ID); err != nil {
 		p.status.SetText("Não foi possível copiar o item")
+		return
+	}
+	if p.items[id].Kind == core.ClipKindImage {
+		p.disarmAutoPaste()
+		p.status.SetText("Imagem copiada — cole onde preferir")
 		return
 	}
 	p.armAutoPaste()

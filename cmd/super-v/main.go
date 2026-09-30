@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 	"os/signal"
@@ -14,7 +15,9 @@ import (
 	clipboardplatform "super_v/internal/platform/clipboard"
 	hotkeyplatform "super_v/internal/platform/hotkey"
 	inputplatform "super_v/internal/platform/input"
+	notificationplatform "super_v/internal/platform/notification"
 	pointerplatform "super_v/internal/platform/pointer"
+	screenshotplatform "super_v/internal/platform/screenshot"
 	windowplatform "super_v/internal/platform/window"
 	"super_v/internal/ui/fyne"
 )
@@ -41,14 +44,39 @@ func main() {
 		defer windowController.Close()
 	}
 
-	shortcut := hotkeyplatform.NewSuperV()
+	shortcut := hotkeyplatform.NewSuperShiftV()
 	if err := shortcut.Register(); err != nil {
 		log.Fatal(err)
 	}
 	defer shortcut.Close()
 
+	screenshotCapturer, err := screenshotplatform.NewX11Screenshot()
+	if err != nil {
+		log.Printf("captura de tela indisponivel: %v", err)
+	}
+	var screenshotShortcut *hotkeyplatform.SuperV
+	var screenshotNotifier notificationplatform.Notifier
+	if screenshotCapturer != nil {
+		screenshotShortcut = hotkeyplatform.NewSuperShiftS()
+		if err := screenshotShortcut.Register(); err != nil {
+			log.Printf("atalho Super+Shift+S indisponivel: %v", err)
+			screenshotShortcut = nil
+		} else {
+			defer screenshotShortcut.Close()
+			notifier, err := notificationplatform.NewNotifySend()
+			if err != nil {
+				log.Printf("notificacao de captura indisponivel: %v", err)
+			} else {
+				screenshotNotifier = notifier
+			}
+		}
+	}
+
 	application := app.NewWithID("io.superv.clipboard")
-	manager := core.NewManager(core.NewHistory(50), clipboard)
+	if !fyneui.SetupTray(application) {
+		log.Printf("bandeja do sistema indisponivel neste driver Fyne")
+	}
+	manager := core.NewManager(core.NewHistory(10), clipboard)
 	popup := fyneui.NewPopup(application, manager, pointer)
 	popup.SetWindowController(windowController)
 
@@ -70,8 +98,11 @@ func main() {
 
 	go monitorClipboard(manager)
 	go openPopupOnShortcut(shortcut, popup)
+	if screenshotShortcut != nil {
+		go captureScreenshots(screenshotShortcut.Events(), screenshotCapturer, screenshotNotifier, manager)
+	}
 
-	log.Printf("super_v iniciado; Super+V registrado; aguardando atalho")
+	log.Printf("super_v iniciado; Super+Shift+V registrado; aguardando atalhos")
 	if shouldShowPopupOnStart(os.Args) {
 		time.AfterFunc(250*time.Millisecond, func() {
 			fyne.Do(func() {
@@ -83,6 +114,38 @@ func main() {
 	}
 
 	application.Run()
+}
+
+func captureScreenshots(events <-chan hotkeyplatform.Event, capturer screenshotplatform.Capturer, notifier notificationplatform.Notifier, manager *core.Manager) {
+	var lastShortcut time.Time
+	for range events {
+		now := time.Now()
+		if !shouldHandleShortcut(lastShortcut, now) {
+			continue
+		}
+		lastShortcut = now
+
+		path, err := capturer.Capture()
+		if err != nil {
+			if !errors.Is(err, screenshotplatform.ErrCaptureCancelled) {
+				log.Printf("nao foi possivel capturar a tela: %v", err)
+			}
+			continue
+		}
+		added, err := manager.RecordCapturedImage(path)
+		if err != nil {
+			log.Printf("nao foi possivel colocar a captura no clipboard: %v", err)
+		}
+		if !added {
+			continue
+		}
+		if notifier == nil {
+			continue
+		}
+		if err := notifier.Notify("Captura de tela salva", path); err != nil {
+			log.Printf("nao foi possivel notificar captura de tela: %v", err)
+		}
+	}
 }
 
 func waitForShutdown(signals <-chan os.Signal, quit func()) {
@@ -103,6 +166,12 @@ func monitorClipboard(manager *core.Manager) {
 			lastError = ""
 			continue
 		}
+		if errors.Is(err, clipboardplatform.ErrClipboardNotText) {
+			// Image selections belong in the image history path. They must not be
+			// converted into a text row or replace the user's clipboard.
+			lastError = ""
+			continue
+		}
 		if err.Error() != lastError {
 			log.Printf("clipboard indisponivel: %v", err)
 			lastError = err.Error()
@@ -112,12 +181,12 @@ func monitorClipboard(manager *core.Manager) {
 
 func openPopupOnShortcut(shortcut *hotkeyplatform.SuperV, popup *fyneui.Popup) {
 	var lastShortcut time.Time
-	for range shortcut.Events() {
+	for event := range shortcut.Events() {
 		now := time.Now()
 		if !dispatchShortcut(&lastShortcut, now, func() {
-			log.Printf("Super+V recebido")
+			log.Printf("Super+Shift+V recebido")
 			fyne.DoAndWait(func() {
-				if err := popup.ShowAtPointer(); err != nil {
+				if err := popup.ShowAtPointer(event.Timestamp); err != nil {
 					log.Printf("nao foi possivel abrir o historico: %v", err)
 				}
 			})

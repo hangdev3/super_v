@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Super V
+Comment=Atalhos globais do Super V
+Exec=/usr/bin/super-v
+TryExec=/usr/bin/super-v
+Terminal=false
+NoDisplay=true
+OnlyShowIn=Cinnamon;
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=2
+X-MATE-Autostart-enabled=true

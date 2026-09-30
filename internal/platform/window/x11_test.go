@@ -36,3 +36,23 @@ func TestWindowIDsFromClientListProperty(t *testing.T) {
 		t.Fatalf("client window IDs = %#v, want %#v", got, want)
 	}
 }
+
+func TestActiveWindowMessageUsesTheKeyPressTimestamp(t *testing.T) {
+	// Arrange
+	target := xproto.Window(0x33)
+	active := xproto.Window(0x55)
+	atom := xproto.Atom(0x77)
+	timestamp := uint32(123456)
+
+	// Act
+	message := activeWindowMessage(target, atom, timestamp, active)
+
+	// Assert
+	if message.Format != 32 || message.Window != target || message.Type != atom {
+		t.Fatalf("unexpected active window message header: %#v", message)
+	}
+	wantData := []uint32{1, timestamp, uint32(active), 0, 0}
+	if !reflect.DeepEqual(message.Data.Data32, wantData) {
+		t.Fatalf("active window message data = %#v, want %#v", message.Data.Data32, wantData)
+	}
+}

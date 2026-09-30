@@ -112,6 +112,28 @@ func (c *X11WindowController) IsFocused(title string) (bool, error) {
 	return active == target, nil
 }
 
+func (c *X11WindowController) Activate(title string, timestamp uint32) error {
+	if timestamp == 0 {
+		return errors.New("ativar janela X11 exige timestamp valido")
+	}
+
+	target := c.targetWindowID(title)
+	if target == xproto.Window(0) {
+		return fmt.Errorf("janela X11 %q ainda nao foi identificada", title)
+	}
+
+	active, err := c.activeWindowID()
+	if err != nil {
+		return err
+	}
+	message := activeWindowMessage(target, c.activeWindow, timestamp, active)
+	mask := uint32(xproto.EventMaskSubstructureRedirect | xproto.EventMaskSubstructureNotify)
+	if err := xproto.SendEventChecked(c.connection, false, c.root, mask, string(message.Bytes())).Check(); err != nil {
+		return fmt.Errorf("ativar janela X11 %q: %w", title, err)
+	}
+	return nil
+}
+
 func (c *X11WindowController) targetWindowID(title string) xproto.Window {
 	c.mu.RLock()
 	target := c.targetWindow
@@ -191,6 +213,21 @@ func windowIDsFromProperty(value []byte) []xproto.Window {
 		windows = append(windows, xproto.Window(binary.LittleEndian.Uint32(value[start:start+4])))
 	}
 	return windows
+}
+
+func activeWindowMessage(target xproto.Window, atom xproto.Atom, timestamp uint32, active xproto.Window) xproto.ClientMessageEvent {
+	return xproto.ClientMessageEvent{
+		Format: 32,
+		Window: target,
+		Type:   atom,
+		Data: xproto.ClientMessageDataUnionData32New([]uint32{
+			1,
+			timestamp,
+			uint32(active),
+			0,
+			0,
+		}),
+	}
 }
 
 func (c *X11WindowController) windowPID(window xproto.Window) (uint32, error) {

@@ -1,0 +1,10 @@
+Package: super-v
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Maintainer: Super V maintainers <super-v@localhost>
+Depends: xclip | xsel, gnome-screenshot, libnotify-bin, libgl1, libx11-6, libxrandr2, libxinerama1, libxcursor1, libxi6, libxxf86vm1, libwayland-client0
+Description: clipboard history and screenshot shortcuts for Linux
+ Super V provides a local clipboard history popup and global screenshot
+ shortcuts for Linux Mint Cinnamon on X11.

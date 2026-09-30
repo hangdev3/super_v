@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Super V
+Comment=Histórico do clipboard e captura de tela
+Exec=/usr/bin/super-v
+TryExec=/usr/bin/super-v
+Terminal=false
+Categories=Utility;
+Keywords=clipboard;history;screenshot;capture;
